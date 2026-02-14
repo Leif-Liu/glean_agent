@@ -7,6 +7,7 @@ from typing import Dict, List, Any, Optional
 from loguru import logger
 
 from config.config import glean_config, agent_config
+from glean.api_client import Glean, models
 from utils.retry import clean_html
 
 
@@ -177,8 +178,8 @@ class DocumentRetriever:
     
     async def _fetch_via_glean_api(self, doc_id: str, search_result: Dict[str, Any]) -> str:
         """
-        通过 Glean API 获取文档内容
-        
+        通过 Glean API 获取文档内容 - 使用正确的 SDK 方法
+
         优势：
         - 内部系统访问权限
         - 获取完整结构化内容
@@ -187,33 +188,47 @@ class DocumentRetriever:
         client = self._get_glean_client()
         if not client:
             raise Exception("Glean API client not available")
-        
+
         logger.debug(f"🔌 Fetching via Glean API: {doc_id}")
-        
-        # 使用 Glean API 获取文档内容
-        # 根据文档类型使用不同的 API 端点
+
         try:
-            # 这里根据不同的文档类型调用相应的 API
-            # 例如：对于 Confluence 文档，使用 documents endpoint
-            # 对于其他类型，可能需要使用不同的方法
-            
-            # 临时实现：假设有一个通用的文档获取方法
-            response = client.documents.get_document(doc_id)
-            
-            # 解析响应内容
-            if hasattr(response, 'content'):
-                return response.content
-            elif hasattr(response, 'body'):
-                return response.body
+            # 使用正确的 Client API: client.client.documents.retrieve()
+            # 注意：doc_ids 是列表参数，不是单个字符串
+            response = client.client.documents.retrieve(
+                doc_ids=[doc_id],
+                request_options=models.RetrieveDocumentRequestOptions(
+                    include_body=True
+                )
+            )
+
+            # SDK 返回的是文档列表
+            if response and hasattr(response, 'data'):
+                documents = response.data
+                if documents and len(documents) > 0:
+                    doc = documents[0]
+                    # 尝试获取内容
+                    if hasattr(doc, 'body'):
+                        body = doc.body
+                        if hasattr(body, 'text_content'):
+                            return body.text_content
+                        elif hasattr(body, 'html_content'):
+                            return body.html_content
+                        else:
+                            return str(body)
+                    elif hasattr(doc, 'text_content'):
+                        return doc.text_content
+                    elif hasattr(doc, 'html_content'):
+                        return doc.html_content
+
+            logger.warning(f"⚠️ No content found in Glean API response for {doc_id}")
+            # 回退到URL方法
+            url = search_result.get("url")
+            if url:
+                logger.debug(f"🔄 Glean API fell back to URL: {url}")
+                return await self._fetch_via_http(url, search_result)
             else:
-                # 回退到URL方法
-                url = search_result.get("url")
-                if url:
-                    logger.debug(f"🔄 Glean API fell back to URL: {url}")
-                    return await self._fetch_via_http(url, search_result)
-                else:
-                    raise Exception("No content available from Glean API")
-                    
+                raise Exception("No content available from Glean API")
+
         except Exception as e:
             logger.warning(f"⚠️ Glean API failed, falling back to HTTP: {str(e)}")
             # 自动回退到HTTP方法

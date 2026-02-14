@@ -5,7 +5,7 @@ import asyncio
 from typing import Dict, List, Any, Optional
 from loguru import logger
 
-from glean.api_client import Glean
+from glean.api_client import Glean, models
 from glean.api_client.errors import GleanError
 from config.config import (
     glean_config, agent_config, search_strategy
@@ -104,55 +104,61 @@ class GleanSearcher:
         self,
         client: Glean,
         query: str,
-        request_options: Dict[str, Any]
+        request_options: Optional[Dict[str, Any]]
     ) -> Any:
         """
-        调用 Glean 搜索 API - 统一的接口
-        
-        尝试多种可能的调用方式，确保兼容性
-        
+        调用 Glean 搜索 API - 正确的官方 SDK 用法
+
+        使用 client.client.search.query_async() 进行异步搜索
+
         Args:
             client: Glean 客户端
             query: 搜索查询
-            request_options: 请求选项
-            
+            request_options: 请求选项（可选）
+
         Returns:
             API 响应对象
         """
         try:
-            # 方法1: 标准调用 client.search.search()
-            logger.debug(f"📞 Trying: client.search.search()")
-            response = client.search.search(
-                query=query,
-                requestOptions=request_options
-            )
-            return response
-            
-        except AttributeError as e:
-            logger.warning(f"⚠️ Method not found: client.search.search() - {str(e)}")
-            
-            try:
-                # 方法2: 回退到 client.api.search.search()
-                logger.debug(f"📞 Trying: client.api.search.search()")
-                response = client.api.search.search(
-                    query=query,
-                    requestOptions=request_options
+            logger.debug(f"📞 Calling client.client.search.query_async()")
+
+            # 构建搜索请求参数
+            search_params = {"query": query}
+
+            # 如果提供了 request_options，转换为 SearchRequestOptions 模型
+            if request_options:
+                facet_filters_list = []
+                if "facetFilters" in request_options:
+                    for ff in request_options["facetFilters"]:
+                        facet_filters_list.append(
+                            models.FacetFilter(
+                                field_name=ff["facetName"],
+                                values=[
+                                    models.FacetFilterValue(
+                                        value=v["value"],
+                                        relation_type=models.RelationType.EQUALS
+                                    )
+                                    for v in ff["values"]
+                                ]
+                            )
+                        )
+
+                search_params["request_options"] = models.SearchRequestOptions(
+                    page_size=request_options.get("pageSize", agent_config.max_search_results),
+                    facet_filters=facet_filters_list if facet_filters_list else None
                 )
-                return response
-                
-            except AttributeError:
-                # 方法3: 尝试直接调用 client.search()
-                logger.debug(f"📞 Trying: client.search()")
-                try:
-                    response = client.search(
-                        query=query,
-                        requestOptions=request_options
-                    )
-                    return response
-                except Exception as e:
-                    logger.error(f"❌ All search API methods failed: {str(e)}")
-                    raise GleanError(f"No valid search API method available: {str(e)}")
-                    
+            else:
+                search_params["page_size"] = agent_config.max_search_results
+
+            # 使用异步方法调用
+            response = await client.client.search.query(**search_params)
+
+            logger.debug(f"✅ Search API call successful")
+            return response
+
+        except AttributeError as e:
+            logger.error(f"❌ API method not found: {str(e)}")
+            raise GleanError(f"Search API method not available: {str(e)}")
         except Exception as e:
             logger.error(f"❌ Search API call failed: {str(e)}")
             raise
@@ -165,17 +171,16 @@ class GleanSearcher:
     ) -> List[Dict[str, Any]]:
         """基础搜索"""
         logger.info("🔍 Basic search mode")
-        
-        # 构建搜索请求选项（注意使用驼峰命名）
-        request_options = {
-            "pageSize": agent_config.max_search_results
-        }
-        
+
+        # 构建搜索请求选项
+        request_options = None
+
         # 添加过滤器
         if filters:
-            facet_filters = self._build_facet_filters(filters)
-            request_options["facetFilters"] = facet_filters
-        
+            request_options = {
+                "facetFilters": self._build_facet_filters(filters)
+            }
+
         try:
             # 调用统一的搜索接口
             response = await self._call_search_api(
@@ -183,9 +188,9 @@ class GleanSearcher:
                 query,
                 request_options
             )
-            
+
             return self._parse_search_results(response)
-            
+
         except GleanError:
             logger.error("❌ Basic search failed")
             return []
@@ -198,41 +203,44 @@ class GleanSearcher:
     ) -> List[Dict[str, Any]]:
         """语义搜索（使用查询扩展）"""
         logger.info("🧠 Semantic search mode")
-        
+
         # 扩展查询
         expanded_queries = self._expand_query(query)
-        
+
         if not expanded_queries:
             # 如果没有扩展查询，回退到基础搜索
             logger.warning("⚠️ No expanded queries, falling back to basic search")
             return await self._basic_search(client, query, filters)
-        
+
         all_results = []
         for expanded_query in expanded_queries:
-            search_options = {
-                "pageSize": max(agent_config.max_search_results // len(expanded_queries), 1)
+            # 计算每个查询的页面大小
+            page_size = max(agent_config.max_search_results // len(expanded_queries), 1)
+
+            request_options = {
+                "pageSize": page_size
             }
-            
+
             if filters:
-                search_options["facetFilters"] = self._build_facet_filters(filters)
-            
+                request_options["facetFilters"] = self._build_facet_filters(filters)
+
             try:
                 response = await self._call_search_api(
                     client,
                     expanded_query,
-                    search_options
+                    request_options
                 )
-                
+
                 results = self._parse_search_results(response)
                 all_results.extend(results)
-                
+
             except GleanError as e:
                 logger.warning(f"⚠️ Semantic search failed for '{expanded_query}': {str(e)}")
                 continue
-        
+
         # 去重和排序
         all_results = self._deduplicate_results(all_results)
-        
+
         return all_results[:agent_config.max_search_results]
     
     async def _hybrid_search(
@@ -384,13 +392,13 @@ class GleanSearcher:
         return all_entities
     
     def _build_facet_filters(self, filters: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """构建 Facet 过滤器"""
+        """构建 Facet 过滤器 - 适配 SDK 格式"""
         facet_filters = []
-        
+
         for field_name, values in filters.items():
             if isinstance(values, list):
                 facet_filters.append({
-                    "facetName": field_name,
+                    "field_name": field_name,  # SDK 使用 snake_case
                     "values": [
                         {"relationType": "EQUALS", "value": v}
                         for v in values
@@ -398,59 +406,79 @@ class GleanSearcher:
                 })
             else:
                 facet_filters.append({
-                    "facetName": field_name,
+                    "field_name": field_name,
                     "values": [
                         {"relationType": "EQUALS", "value": values}
                     ]
                 })
-        
+
         return facet_filters
     
     def _parse_search_results(self, response) -> List[Dict[str, Any]]:
         """
-        解析搜索结果
-        
+        解析搜索结果 - 兼容 Glean SDK 响应格式
+
         Args:
             response: API 响应对象
-            
+
         Returns:
             解析后的结果列表
         """
         if response is None:
             logger.warning("⚠️ Response is None")
             return []
-        
+
         try:
-            # 检查响应对象的结构
+            # 检查响应对象的结构 - SDK 返回 SearchResponse 对象
+            results_list = None
+
             if hasattr(response, 'results'):
+                # SDK 返回格式：SearchResponse.results
                 results_list = response.results
-            elif hasattr(response, 'data') and hasattr(response.data, 'results'):
-                results_list = response.data.results
-            elif isinstance(response, dict) and 'results' in response:
-                results_list = response['results']
-            else:
-                logger.warning(f"⚠️ Unknown response structure: {type(response)}")
-                return []
-            
+            elif hasattr(response, 'data'):
+                if hasattr(response.data, 'results'):
+                    results_list = response.data.results
+                else:
+                    results_list = response.data
+            elif isinstance(response, list):
+                results_list = response
+            elif isinstance(response, dict):
+                results_list = response.get('results') or response.get('data', [])
+
             if not results_list:
                 return []
-            
+
             parsed = []
             for result in results_list:
-                parsed.append({
-                    "id": getattr(result, 'id', ''),
-                    "title": getattr(result, 'title', ''),
-                    "snippet": getattr(result, 'snippet', ''),
-                    "url": getattr(result, 'url', ''),
-                    "datasource": getattr(result, 'datasource', ''),
-                    "last_modified": getattr(result, 'lastModified', ''),
-                    "object_type": getattr(result, 'objectType', ''),
-                    "metadata": getattr(result, 'metadata', {})
-                })
-            
+                # 兼容 SDK 返回的对象和字典两种格式
+                if hasattr(result, '__dict__'):
+                    # 对象格式
+                    parsed.append({
+                        "id": getattr(result, 'id', ''),
+                        "title": getattr(result, 'title', ''),
+                        "snippet": getattr(result, 'snippet', ''),
+                        "url": getattr(result, 'url', ''),
+                        "datasource": getattr(result, 'datasource', ''),
+                        "last_modified": getattr(result, 'last_modified', ''),
+                        "object_type": getattr(result, 'object_type', ''),
+                        "metadata": getattr(result, 'metadata', {})
+                    })
+                else:
+                    # 字典格式
+                    parsed.append({
+                        "id": result.get('id', ''),
+                        "title": result.get('title', ''),
+                        "snippet": result.get('snippet', ''),
+                        "url": result.get('url', ''),
+                        "datasource": result.get('datasource', ''),
+                        "last_modified": result.get('last_modified', ''),
+                        "object_type": result.get('object_type', ''),
+                        "metadata": result.get('metadata', {})
+                    })
+
             logger.debug(f"✅ Parsed {len(parsed)} results")
             return parsed
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to parse search results: {str(e)}")
             return []
