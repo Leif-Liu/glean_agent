@@ -151,6 +151,51 @@ python -m tools.interactive
 tail -f logs/agent.log
 ```
 
+## 运行模式
+
+### 原始模式（使用外部 LLM）
+
+```bash
+# 演示模式
+python main.py demo
+
+# 交互模式
+python main.py interactive
+
+# 单次查询
+python main.py "你的问题"
+```
+
+### 优化模式（使用 Glean Chat API）✨
+
+```bash
+# 优化演示模式（无需外部 LLM）
+python main.py glean-chat-demo
+
+# 优化交互模式
+python main.py glean-chat-interactive
+```
+
+**优势：**
+- 无需配置外部 LLM 服务
+- 自动利用 Glean 的搜索和 LLM 能力
+- 自动继承 Glean 权限系统
+- 更快的响应速度
+
+### Glean Agents 模式
+
+```bash
+# 列出可用的 Agents
+python main.py agents
+
+# 使用特定 Agent 查询
+python main.py agent <agent_id> "你的问题"
+```
+
+**Agent ID 获取：**
+在 Glean Agent Builder 中创建 Agent 后，URL 中会显示：
+`https://your-instance.glean.com/admin/agents/<agent_id>`
+
 ## 许可证
 
 MIT License
