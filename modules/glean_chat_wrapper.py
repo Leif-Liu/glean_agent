@@ -365,17 +365,13 @@ class GleanAgentsWrapper:
         self,
         agent_id: str,
         query: str,
-        inputs: Optional[Dict[str, Any]] = None,
-        stream: bool = False
     ) -> Dict[str, Any]:
         """
-        运行指定的 Agent
+        运行指定的 Agent（同步）
 
         Args:
             agent_id: Agent ID（从 Agent Builder URL 中获取）
             query: 用户查询
-            inputs: 额外输入参数
-            stream: 是否流式返回
 
         Returns:
             Agent 执行结果
@@ -385,31 +381,17 @@ class GleanAgentsWrapper:
         client = self._get_client()
 
         try:
-            # 构建请求输入
-            request_inputs = {"query": query}
-            if inputs:
-                request_inputs.update(inputs)
-
-            if stream:
-                # 流式执行
-                raise NotImplementedError(
-                    "Streaming agent runs require SSE handling. "
-                    "Use run_agent_async for streaming support."
-                )
-            else:
-                # 等待完整响应
-                response = client.client.agents.create_and_wait_run(
-                    agent_id=agent_id,
-                    inputs=request_inputs
-                )
+            response = client.client.agents.run(
+                agent_id=agent_id,
+                messages=[{"role": "USER", "content": query}],
+            )
 
             logger.success(f"✅ Agent {agent_id} completed")
 
             return {
                 "success": True,
                 "answer": str(response),
-                "inputs": request_inputs,
-                "raw_response": response
+                "raw_response": response,
             }
 
         except Exception as e:
@@ -417,15 +399,13 @@ class GleanAgentsWrapper:
             return {
                 "success": False,
                 "answer": "",
-                "error": str(e)
+                "error": str(e),
             }
 
     async def run_agent_async(
         self,
         agent_id: str,
         query: str,
-        inputs: Optional[Dict[str, Any]] = None,
-        stream: bool = False
     ) -> Dict[str, Any]:
         """
         异步运行指定的 Agent
@@ -433,8 +413,6 @@ class GleanAgentsWrapper:
         Args:
             agent_id: Agent ID
             query: 用户查询
-            inputs: 额外输入参数
-            stream: 是否流式返回
 
         Returns:
             Agent 执行结果
@@ -444,40 +422,17 @@ class GleanAgentsWrapper:
         client = self._get_client()
 
         try:
-            # 构建请求输入
-            request_inputs = {"query": query}
-            if inputs:
-                request_inputs.update(inputs)
-
-            if stream:
-                # 流式执行（SSE）
-                # 注意：需要处理 SSE 流
-                response = await client.client.agents.create_and_stream_run_async(
-                    agent_id=agent_id,
-                    inputs=request_inputs
-                )
-
-                # TODO: 处理流式响应
-                return {
-                    "success": True,
-                    "answer": "",
-                    "stream": True,
-                    "raw_response": response
-                }
-            else:
-                # 等待完整响应
-                response = await client.client.agents.create_and_wait_run_async(
-                    agent_id=agent_id,
-                    inputs=request_inputs
-                )
+            response = await client.client.agents.run_async(
+                agent_id=agent_id,
+                messages=[{"role": "USER", "content": query}],
+            )
 
             logger.success(f"✅ Agent {agent_id} completed")
 
             return {
                 "success": True,
                 "answer": str(response),
-                "inputs": request_inputs,
-                "raw_response": response
+                "raw_response": response,
             }
 
         except Exception as e:
@@ -485,7 +440,7 @@ class GleanAgentsWrapper:
             return {
                 "success": False,
                 "answer": "",
-                "error": str(e)
+                "error": str(e),
             }
 
     def get_agent_schemas(self, agent_id: str) -> Dict[str, Any]:

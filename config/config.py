@@ -68,6 +68,8 @@ class AgentConfig(BaseModel):
     default_search_mode: SearchMode = Field(default=SearchMode.HYBRID)
     enable_deep_search: bool = Field(default=True)
     search_timeout: int = Field(default=30, ge=5, le=120)
+    max_snippet_size: int = Field(default=400, ge=50, le=2000)
+    search_timeout_millis: int = Field(default=30000, ge=1000, le=120000)
     
     # 分析配置
     complexity_thresholds: dict = Field(default={

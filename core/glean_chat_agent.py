@@ -5,6 +5,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 from loguru import logger
 
+from glean.api_client import Glean, models
 from config.config import glean_config, agent_config
 from modules.glean_chat_wrapper import GleanChatWrapper, GleanAgentsWrapper
 from modules.searcher import GleanSearcher
@@ -33,6 +34,9 @@ class GleanChatAgent:
         self.use_agents = use_agents
         self.agent_id = agent_id
 
+        # Glean SDK 客户端（同步调用）
+        self._glean_client: Optional[Glean] = None
+
         # 初始化组件
         self.chat_wrapper = GleanChatWrapper()
         self.agents_wrapper = GleanAgentsWrapper() if use_agents else None
@@ -51,6 +55,15 @@ class GleanChatAgent:
         }
 
         logger.info(f"🚀 Glean Chat Agent initialized (agents: {use_agents}, agent_id: {agent_id})")
+
+    def _get_client(self) -> Glean:
+        """获取 Glean SDK 客户端（懒加载）"""
+        if self._glean_client is None:
+            self._glean_client = Glean(
+                instance=glean_config.instance,
+                api_token=glean_config.client_api_token,
+            )
+        return self._glean_client
 
     def query(self, question: str, with_context: bool = True) -> Dict[str, Any]:
         """
@@ -92,36 +105,32 @@ class GleanChatAgent:
                 logger.info("💬 Using Glean Chat API")
 
                 if with_context:
-                    # 先搜索相关文档
-                    search_results = self.searcher.search(
-                        query=question,
-                        filters={},
-                        mode=agent_config.default_search_mode
-                    )
+                    # 通过 SDK 同步搜索相关文档
+                    search_results = self._search_sync(question)
                     self.stats["total_searches"] += 1
                     response["search_results"] = search_results
 
-                    # 检索文档内容
                     if search_results:
-                        retrieved = self._retriever.retrieve_documents(search_results[:5])
-                        self.stats["total_documents_retrieved"] += len(retrieved)
-                        response["sources"] = retrieved
+                        # 将搜索结果的 snippet 作为来源上下文传给 Chat
+                        sources = [
+                            {
+                                "title": r.get("title", ""),
+                                "content": r.get("snippet", ""),
+                                "datasource": r.get("datasource", ""),
+                                "url": r.get("url", ""),
+                            }
+                            for r in search_results[:5]
+                        ]
+                        self.stats["total_documents_retrieved"] += len(sources)
+                        response["sources"] = sources
 
-                        # 带上下文提问
-                        if retrieved:
-                            result = self.chat_wrapper.ask_with_sources(
-                                question=question,
-                                sources=retrieved
-                            )
-                            response["answer"] = result.get("answer", "")
-                            response["success"] = result.get("success", False)
-                        else:
-                            # 没有检索到内容，直接提问
-                            result = self.chat_wrapper.ask(question=question)
-                            response["answer"] = result.get("answer", "")
-                            response["success"] = result.get("success", False)
+                        result = self.chat_wrapper.ask_with_sources(
+                            question=question,
+                            sources=sources,
+                        )
+                        response["answer"] = result.get("answer", "")
+                        response["success"] = result.get("success", False)
                     else:
-                        # 无搜索结果，直接提问
                         result = self.chat_wrapper.ask(question=question)
                         response["answer"] = result.get("answer", "")
                         response["success"] = result.get("success", False)
@@ -131,7 +140,6 @@ class GleanChatAgent:
                     response["answer"] = result.get("answer", "")
                     response["success"] = result.get("success", False)
 
-                    # 尝试从响应中提取来源
                     if result.get("sources"):
                         response["sources"] = result["sources"]
 
@@ -162,6 +170,70 @@ class GleanChatAgent:
             response["success"] = False
 
         return response
+
+    def _search_sync(
+        self,
+        question: str,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        使用 Glean SDK 同步搜索（glean.client.search.query）
+
+        Args:
+            question: 搜索查询
+            filters: 可选 facet 过滤器 {field_name: [values]}
+
+        Returns:
+            标准化搜索结果列表
+        """
+        client = self._get_client()
+
+        facet_filters = None
+        if filters:
+            facet_filters = [
+                models.FacetFilter(
+                    field_name=field_name,
+                    values=[
+                        models.FacetFilterValue(
+                            value=v,
+                            relation_type=models.RelationType.EQUALS,
+                        )
+                        for v in (values if isinstance(values, list) else [values])
+                    ],
+                )
+                for field_name, values in filters.items()
+            ]
+
+        search_kwargs: Dict[str, Any] = {
+            "query": question,
+            "page_size": agent_config.max_search_results,
+            "max_snippet_size": agent_config.max_snippet_size,
+            "timeout_millis": agent_config.search_timeout_millis,
+        }
+        if facet_filters:
+            search_kwargs["request_options"] = models.SearchRequestOptions(
+                facet_filters=facet_filters,
+            )
+
+        try:
+            res = client.client.search.query(**search_kwargs)
+        except Exception as e:
+            logger.error(f"❌ Sync search failed: {e}")
+            return []
+
+        return self._parse_search_response(res)
+
+    @staticmethod
+    def _parse_search_response(response) -> List[Dict[str, Any]]:
+        """将 SDK SearchResponse 转换为标准化字典列表"""
+        results_list = getattr(response, "results", None)
+        if not results_list:
+            return []
+
+        parsed = []
+        for result in results_list:
+            parsed.append(GleanSearcher._extract_result_fields(result))
+        return parsed
 
     def _query_via_agents(self, question: str) -> Dict[str, Any]:
         """通过 Agents API 查询"""
@@ -286,6 +358,7 @@ class GleanChatAgent:
         self.chat_wrapper.close()
         if self.agents_wrapper:
             self.agents_wrapper.close()
+        self._glean_client = None
         logger.info("🔌 Glean Chat Agent closed")
 
 
