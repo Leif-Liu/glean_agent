@@ -178,12 +178,68 @@ class LLMConfig(BaseModel):
             raise ValueError("LLM_MODEL_NAME is required")
 
 
+class JiraConfig(BaseModel):
+    """Jira API 配置 (用于 Action Server)"""
+
+    # OAuth 配置
+    atlassian_domain: str = Field(default_factory=lambda: os.getenv("ATLASSIAN_DOMAIN", ""))
+    jira_client_id: str = Field(default_factory=lambda: os.getenv("JIRA_CLIENT_ID", ""))
+    jira_client_secret: str = Field(default_factory=lambda: os.getenv("JIRA_CLIENT_SECRET", ""))
+    jira_cloud_id: str = Field(default_factory=lambda: os.getenv("JIRA_CLOUD_ID", ""))
+
+    # Jira API 端点
+    @property
+    def jira_api_url(self) -> str:
+        return f"https://{self.atlassian_domain}.atlassian.net/rest/api/3"
+
+    @property
+    def jira_search_url(self) -> str:
+        return f"{self.jira_api_url}/search"
+
+    @property
+    def atlassian_oauth_url(self) -> str:
+        return "https://auth.atlassian.com/oauth/token"
+
+    def validate(self) -> None:
+        """验证 Jira 配置"""
+        if not self.atlassian_domain:
+            raise ValueError("ATLASSIAN_DOMAIN is required")
+        if not self.jira_client_id:
+            raise ValueError("JIRA_CLIENT_ID is required")
+        if not self.jira_client_secret:
+            raise ValueError("JIRA_CLIENT_SECRET is required")
+
+
+class ActionServerConfig(BaseModel):
+    """Action Server 配置"""
+
+    # 服务器配置
+    host: str = Field(default_factory=lambda: os.getenv("ACTION_SERVER_HOST", "0.0.0.0"))
+    port: int = Field(default_factory=lambda: int(os.getenv("ACTION_SERVER_PORT", "8000")))
+
+    # API 配置
+    api_title: str = Field(default="Glean JQL Action Server")
+    api_version: str = Field(default="1.0.0")
+
+    # 日志配置
+    log_level: str = Field(default_factory=lambda: os.getenv("ACTION_SERVER_LOG_LEVEL", "INFO"))
+
+    # 重试配置
+    max_retries: int = Field(default=3, ge=1, le=10)
+    retry_delay: float = Field(default=1.0, ge=0.1, le=10.0)
+
+    # 超时配置
+    request_timeout: int = Field(default=30, ge=5, le=120)
+
+
 # 全局配置实例
 glean_config = GleanConfig()
 agent_config = AgentConfig()
 search_strategy = SearchStrategy()
 analysis_config = AnalysisConfig()
 llm_config = LLMConfig()
+jira_config = JiraConfig()
+action_server_config = ActionServerConfig()
 
 # 验证配置
 try:

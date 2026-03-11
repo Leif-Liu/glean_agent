@@ -279,6 +279,12 @@ def run_with_agent(agent_id: str, question: str):
     print("=" * 60)
 
 
+def run_action_server():
+    """运行 Action Server"""
+    from actions.server import run_server
+    run_server()
+
+
 if __name__ == "__main__":
     import sys
 
@@ -299,6 +305,8 @@ if __name__ == "__main__":
                 print("Example: python main.py agent agent-123 \"What is our policy?\"")
             else:
                 run_with_agent(sys.argv[2], sys.argv[3])
+        elif sys.argv[1] == "action-server":
+            run_action_server()
         else:
             run_simple_query(" ".join(sys.argv[1:]))
     else:
@@ -315,3 +323,6 @@ if __name__ == "__main__":
         print("  === Glean Agents Mode ===")
         print("  python main.py agents                     - List available agents")
         print("  python main.py agent <id> <question>    - Run specific agent")
+        print()
+        print("  === Action Server Mode ===")
+        print("  python main.py action-server              - Run JQL Action Server")

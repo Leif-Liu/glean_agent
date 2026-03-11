@@ -1,0 +1,197 @@
+openapi: 3.0.0
+info:
+  title: Glean JQL Conversion Action
+  version: 1.0.0
+  description: |
+    An execution action that converts natural language queries into valid Jira JQL
+    and validates them against Jira's REST API.
+
+servers:
+  - url: https://{instance-name}-be.glean.com/tools/jql
+    variables:
+      instance:
+        default: instance-name
+        description: The instance name that determines the deployment backend
+
+security:
+  - OAuth2: []
+
+paths:
+  /convert_to_jql:
+    post:
+      summary: Convert natural language to JQL
+      description: |
+        Converts a natural language query into a valid Jira JQL statement.
+        The generated JQL can be optionally validated against Jira's API.
+
+        This action uses Glean's Chat API for NL→JQL conversion and Jira's
+        REST API for validation, ensuring the generated JQL is syntactically
+        correct and executable.
+
+        **Example Flow:**
+        1. User asks "Find all high priority bugs assigned to me"
+        2. Action generates JQL: `priority = "Highest" AND assignee = currentUser()`
+        3. Optional validation against Jira API
+        4. Return validated JQL to Glean Assistant
+
+      parameters:
+        - name: Glean-User-Email
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Email of the authenticated Glean user (for logging/auditing)
+        - name: Authorization
+          in: header
+          required: false
+          schema:
+            type: string
+          description: OAuth Bearer token for Jira API validation (required if validate=true)
+
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  x-glean-typehint: 'Content'
+                  type: string
+                  description: Natural language description of the Jira query
+                  example: "Find all high priority bugs"
+                project_context:
+                  type: string
+                  description: Optional project context to improve conversion accuracy
+                  example: "Search in project PROJ1"
+                use_fewshot:
+                  type: boolean
+                  default: true
+                  description: Whether to use few-shot examples for better conversion
+                validate:
+                  type: boolean
+                  default: true
+                  description: Whether to validate the generated JQL against Jira API
+
+      responses:
+        '200':
+          description: JQL conversion successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JQLConversionResponse'
+        '400':
+          description: Bad request - invalid input parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized - missing or invalid OAuth token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Service unavailable - converter not initialized
+
+components:
+  securitySchemes:
+    OAuth2:
+      type: oauth2
+      flows:
+        implicit:
+          authorizationUrl: https://auth.atlassian.com/authorize?audience={domain}.atlassian.net&prompt=consent
+          tokenUrl: https://auth.atlassian.com/oauth/token
+          scopes:
+            read:jira-work: Read access to Jira work data
+            read:jira-user: Read access to Jira user data
+
+  schemas:
+    JQLConversionResponse:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+          description: Whether the conversion was successful
+        jql:
+          x-glean-typehint: 'JQLQuery'
+          type: string
+          nullable: true
+          description: The generated JQL query statement
+          example: 'priority = "Highest" AND issuetype = "Bug"'
+        explanation:
+          type: string
+          nullable: true
+          description: Human-readable explanation of the generated query
+          example: "Find bugs with highest priority"
+        fields_used:
+          type: array
+          items:
+            type: string
+          description: List of Jira fields used in the query
+          example: ["priority", "issuetype"]
+        validated:
+          type: boolean
+          nullable: true
+          description: Whether the JQL was validated against Jira API
+        validation_error:
+          type: string
+          nullable: true
+          description: Error message if validation failed
+        validation_suggestions:
+          type: array
+          items:
+            type: string
+          description: Suggestions to fix validation errors
+        error:
+          type: string
+          nullable: true
+          description: Error message if conversion failed
+
+    ErrorResponse:
+      type: object
+      required:
+        - success
+        - error
+      properties:
+        success:
+          type: boolean
+          description: Always false for error responses
+          example: false
+        error:
+          type: string
+          description: Human-readable error message
+        detail:
+          type: string
+          nullable: true
+          description: Detailed error information (only in debug mode)
+
+# Glean Action Configuration
+# This section provides configuration hints for Glean's Action Setup UI
+x-glean-action-config:
+  name: "JQL Query Generator"
+  description: "Convert natural language to Jira JQL queries"
+  icon: "https://your-instance.glean.com/static/icons/jira.svg"
+  category: "Integration"
+
+  # OAuth Configuration
+  oauth:
+    type: "oauth2"
+    authorizationUrl: "https://auth.atlassian.com/authorize?audience={ATLASSIAN_DOMAIN}.atlassian.net&prompt=consent"
+    tokenUrl: "https://auth.atlassian.com/oauth/token"
+    scopes:
+      - "read:jira-work"
+      - "read:jira-user"
+      - "offline_access"
+
+  # Example queries for Glean to suggest
+  exampleQueries:
+    - "Find all high priority bugs"
+    - "Show me open issues assigned to me"
+    - "List all stories in project PROJ"
+    - "Find bugs created last week"
+    - "Show unresolved tasks with high priority"
